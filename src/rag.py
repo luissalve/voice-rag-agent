@@ -13,6 +13,7 @@ model, a live database, or the live Anthropic API. See README.md's
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -112,6 +113,46 @@ def chunk_text(
         start += step
 
     return chunks
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Return the cosine similarity between two equal-length vectors.
+
+    Result is in [-1.0, 1.0]. A zero vector on either side returns 0.0 rather
+    than raising — keeps ranking well-defined when a stub embedder emits a
+    zero vector for an unknown token.
+
+    Raises:
+        ValueError: If `a` and `b` have different lengths.
+    """
+    if len(a) != len(b):
+        raise ValueError("vectors must have the same length")
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def rank_by_similarity(
+    query_embedding: list[float],
+    candidates: Iterable[EmbeddedChunk],
+) -> list[EmbeddedChunk]:
+    """Rank `EmbeddedChunk`s by cosine similarity to the query, descending.
+
+    Pure function — no DB, no network. Designed to sit between
+    `retrieve_top_k` (which fetches candidates from pgvector) and
+    `answer_with_citations` (which asks Claude). Splitting ranking out this
+    way makes it trivially unit-testable with a deterministic fake embedder
+    (see tests/conftest.py).
+
+    Stable: candidates with identical similarity scores keep their input
+    order in the output, so retrieval results stay reproducible.
+    """
+    scored = [(cosine_similarity(query_embedding, c.embedding), c) for c in candidates]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [c for _, c in scored]
 
 
 def embed_chunks(chunks: list[Chunk]) -> list[EmbeddedChunk]:
